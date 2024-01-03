@@ -15,6 +15,7 @@ const CAST: &str = include_str!("cast.metal");
 const REDUCE: &str = include_str!("reduce.metal");
 const CONV: &str = include_str!("conv.metal");
 const MFA: &[u8] = include_bytes!("libMetalFlashAttention.metallib");
+const QUANTIZED: &str = include_str!("quantized.metal");
 
 /// Most kernels apply similarly across the tensors
 /// This creates a strategy that uses the maximum amount of threads per threadgroup (capped at the
@@ -117,6 +118,7 @@ pub enum Source {
     Reduce,
     Mfa,
     Conv,
+    Quantized,
 }
 
 macro_rules! ops{
@@ -228,6 +230,7 @@ impl Kernels {
             Source::Cast => CAST,
             Source::Reduce => REDUCE,
             Source::Conv => CONV,
+            Source::Quantized => QUANTIZED,
             Source::Mfa => panic!("Invalid lib"),
         }
     }
@@ -1554,6 +1557,90 @@ pub fn call_upsample_nearest_2d(
         )
     );
     encoder.use_resource(input, metal::MTLResourceUsage::Read);
+    encoder.use_resource(output, metal::MTLResourceUsage::Write);
+    encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+    encoder.update_fence(&kernels.fence);
+    encoder.end_encoding();
+
+    Ok(())
+}
+
+pub fn call_quantized_matmul_t(
+    device: &Device,
+    command_buffer: &CommandBufferRef,
+    kernels: &Kernels,
+    name: &'static str,
+    (_b, _m, _n, _k): (usize, usize, usize, usize),
+    lhs: &Buffer,
+    rhs: &Buffer,
+    output: &Buffer,
+) -> Result<(), MetalKernelError> {
+    let pipeline = kernels.load_pipeline(device, Source::Quantized, name)?;
+    //     let (thread_group_count, thread_group_size) = linear_split(&pipeline, dst_el);
+    let encoder = command_buffer.new_compute_command_encoder();
+    encoder.wait_for_fence(&kernels.fence);
+    encoder.set_compute_pipeline_state(&pipeline);
+    set_params!(encoder, (lhs, rhs, output));
+    encoder.use_resource(lhs, metal::MTLResourceUsage::Read);
+    encoder.use_resource(rhs, metal::MTLResourceUsage::Read);
+    encoder.use_resource(output, metal::MTLResourceUsage::Write);
+    //   encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+    encoder.update_fence(&kernels.fence);
+    encoder.end_encoding();
+
+    Ok(())
+}
+
+pub fn call_quantized_quantize(
+    device: &Device,
+    command_buffer: &CommandBufferRef,
+    kernels: &Kernels,
+    name: &'static str,
+    elem_count: usize,
+    src: &Buffer,
+    output: &Buffer,
+) -> Result<(), MetalKernelError> {
+    let pipeline = kernels.load_pipeline(device, Source::Quantized, name)?;
+    let (thread_group_count, thread_group_size) = linear_split(&pipeline, elem_count);
+    let encoder = command_buffer.new_compute_command_encoder();
+    encoder.wait_for_fence(&kernels.fence);
+    encoder.set_compute_pipeline_state(&pipeline);
+    set_params!(encoder, (elem_count, src, output));
+    encoder.use_resource(src, metal::MTLResourceUsage::Read);
+    encoder.use_resource(output, metal::MTLResourceUsage::Write);
+    encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+    encoder.update_fence(&kernels.fence);
+    encoder.end_encoding();
+
+    Ok(())
+}
+
+pub fn call_quantized_dequantize(
+    device: &Device,
+    command_buffer: &CommandBufferRef,
+    kernels: &Kernels,
+    name: &'static str,
+    elem_count: usize,
+    src: &Buffer,
+    output: &Buffer,
+) -> Result<(), MetalKernelError> {
+    let pipeline = kernels.load_pipeline(device, Source::Quantized, name)?;
+    let thread_group_count = MTLSize {
+        width: elem_count as NSUInteger,
+        height: 1,
+        depth: 1,
+    };
+
+    let thread_group_size = MTLSize {
+        width: 1,
+        height: 1,
+        depth: 1,
+    };
+    let encoder = command_buffer.new_compute_command_encoder();
+    encoder.wait_for_fence(&kernels.fence);
+    encoder.set_compute_pipeline_state(&pipeline);
+    set_params!(encoder, (elem_count, 0usize, src, output));
+    encoder.use_resource(src, metal::MTLResourceUsage::Read);
     encoder.use_resource(output, metal::MTLResourceUsage::Write);
     encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
     encoder.update_fence(&kernels.fence);

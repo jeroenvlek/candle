@@ -1357,7 +1357,7 @@ impl MetalStorage {
         Ok(Self::new(buffer, device.clone(), dtype))
     }
 
-    fn to_cpu<T: Clone>(&self) -> Result<Vec<T>> {
+    pub(crate) fn to_cpu<T: Clone>(&self) -> Result<Vec<T>> {
         let length = self.buffer.length() as usize;
         let size = self.dtype.size_in_bytes();
         if length % size != 0 {

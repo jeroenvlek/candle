@@ -62,13 +62,13 @@ impl TensorInfo {
         device: &Device,
     ) -> Result<QTensor> {
         let tensor_elems = self.shape.elem_count();
-        let blck_size = self.ggml_dtype.blck_size();
-        if tensor_elems % blck_size != 0 {
+        let block_size = self.ggml_dtype.block_size();
+        if tensor_elems % block_size != 0 {
             crate::bail!(
-            "the number of elements {tensor_elems} is not divisible by the block size {blck_size}"
+            "the number of elements {tensor_elems} is not divisible by the block size {block_size}"
         )
         }
-        let size_in_bytes = tensor_elems / blck_size * self.ggml_dtype.type_size();
+        let size_in_bytes = tensor_elems / block_size * self.ggml_dtype.type_size();
         let mut raw_data = vec![0u8; size_in_bytes];
         reader.seek(std::io::SeekFrom::Start(tensor_data_offset + self.offset))?;
         reader.read_exact(&mut raw_data)?;
@@ -524,10 +524,9 @@ pub fn write<W: std::io::Seek + std::io::Write>(
                 "internal error, unexpected current position {tensor_start_pos} {offset} {pos}"
             )
         }
-        let data_ptr = tensor.as_ptr();
-        let size_in_bytes = tensor.storage_size_in_bytes();
-        let data = unsafe { std::slice::from_raw_parts(data_ptr, size_in_bytes) };
-        w.write_all(data)?;
+        let data = tensor.data()?;
+        let size_in_bytes = data.len();
+        w.write_all(&data)?;
         let padding = 31 - (31 + size_in_bytes) % 32;
         w.write_all(&vec![0u8; padding])?;
     }
