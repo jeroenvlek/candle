@@ -1413,7 +1413,6 @@ pub fn call_gemm(
         height: 1,
         depth: 1,
     };
-    // println!("grid size {grid_size:?} group size {group_size:?}");
     encoder.use_resource(lhs_buffer, metal::MTLResourceUsage::Read);
     encoder.use_resource(rhs_buffer, metal::MTLResourceUsage::Read);
     encoder.use_resource(output, metal::MTLResourceUsage::Write);
@@ -1570,45 +1569,54 @@ pub fn call_quantized_matmul_t(
     command_buffer: &CommandBufferRef,
     kernels: &Kernels,
     name: &'static str,
-    (_b, _m, _n, _k): (usize, usize, usize, usize),
+    (b, m, n, k): (usize, usize, usize, usize),
     lhs: &Buffer,
     rhs: &Buffer,
     output: &Buffer,
 ) -> Result<(), MetalKernelError> {
     let pipeline = kernels.load_pipeline(device, Source::Quantized, name)?;
-    //     let (thread_group_count, thread_group_size) = linear_split(&pipeline, dst_el);
+    let dst_el = b;
+    let (thread_group_count, thread_group_size) = linear_split(&pipeline, dst_el);
     let encoder = command_buffer.new_compute_command_encoder();
     encoder.wait_for_fence(&kernels.fence);
     encoder.set_compute_pipeline_state(&pipeline);
-    set_params!(encoder, (lhs, rhs, output));
+
+    let ne00 = 0usize;
+    let ne02 = 0usize;
+    let nb01 = 0usize;
+    let nb02 = 0usize;
+    let ne12 = 0usize;
+    let nb10 = 0usize;
+    let nb11 = 0usize;
+    let nb12 = 0usize;
+    let ne0 = 0usize;
+    let ne1 = 0usize;
+    let r2 = 0usize;
+    let r3 = 0usize;
+
+    let ne01 = 0u64;
+    let ne11 = 0u64;
+    // let ne12 = 0u64;
+    let ne13 = 0u64;
+    set_params!(
+        encoder,
+        (lhs, rhs, output, ne00, ne02, nb01, nb02, ne12, nb10, nb11, nb12, ne0, ne1, r2, r3)
+    );
+    encoder.set_threadgroup_memory_length(0, 8192);
     encoder.use_resource(lhs, metal::MTLResourceUsage::Read);
     encoder.use_resource(rhs, metal::MTLResourceUsage::Read);
     encoder.use_resource(output, metal::MTLResourceUsage::Write);
-    //   encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
-    encoder.update_fence(&kernels.fence);
-    encoder.end_encoding();
-
-    Ok(())
-}
-
-pub fn call_quantized_quantize(
-    device: &Device,
-    command_buffer: &CommandBufferRef,
-    kernels: &Kernels,
-    name: &'static str,
-    elem_count: usize,
-    src: &Buffer,
-    output: &Buffer,
-) -> Result<(), MetalKernelError> {
-    let pipeline = kernels.load_pipeline(device, Source::Quantized, name)?;
-    let (thread_group_count, thread_group_size) = linear_split(&pipeline, elem_count);
-    let encoder = command_buffer.new_compute_command_encoder();
-    encoder.wait_for_fence(&kernels.fence);
-    encoder.set_compute_pipeline_state(&pipeline);
-    set_params!(encoder, (elem_count, src, output));
-    encoder.use_resource(src, metal::MTLResourceUsage::Read);
-    encoder.use_resource(output, metal::MTLResourceUsage::Write);
-    encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+    let threads_per_grid = MTLSize {
+        width: (ne11 + 31) / 32,
+        height: (ne01 + 63) / 64,
+        depth: ne12 as u64 * ne13,
+    };
+    let threads_per_threadgroup = MTLSize {
+        width: 128,
+        height: 1,
+        depth: 1,
+    };
+    encoder.dispatch_threads(threads_per_grid, threads_per_threadgroup);
     encoder.update_fence(&kernels.fence);
     encoder.end_encoding();
 
@@ -1625,17 +1633,8 @@ pub fn call_quantized_dequantize(
     output: &Buffer,
 ) -> Result<(), MetalKernelError> {
     let pipeline = kernels.load_pipeline(device, Source::Quantized, name)?;
-    let thread_group_count = MTLSize {
-        width: elem_count as NSUInteger,
-        height: 1,
-        depth: 1,
-    };
-
-    let thread_group_size = MTLSize {
-        width: 1,
-        height: 1,
-        depth: 1,
-    };
+    // float4x4
+    let (thread_group_count, thread_group_size) = linear_split(&pipeline, elem_count / 16);
     let encoder = command_buffer.new_compute_command_encoder();
     encoder.wait_for_fence(&kernels.fence);
     encoder.set_compute_pipeline_state(&pipeline);

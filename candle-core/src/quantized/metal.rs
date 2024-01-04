@@ -62,6 +62,7 @@ impl QMetalStorage {
     }
 
     pub fn quantize(&mut self, src: &MetalStorage) -> Result<()> {
+        // Quantization only happens on CPU for now.
         let src = src.to_cpu::<f32>()?;
         let elem_count = src.len();
         let src = crate::Storage::Cpu(crate::CpuStorage::F32(src));

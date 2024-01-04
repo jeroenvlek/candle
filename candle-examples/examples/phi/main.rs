@@ -305,10 +305,12 @@ fn main() -> Result<()> {
             &filenames[0],
             &device,
         )?;
+        println!("Loaded vb");
         let model = match args.model {
             WhichModel::V2 => QMixFormer::new_v2(&config, vb)?,
             _ => QMixFormer::new(&config, vb)?,
         };
+        println!("Loaded model");
         Model::Quantized(model)
     } else {
         let vb = unsafe { VarBuilder::from_mmaped_safetensors(&filenames, DType::F32, &device)? };
