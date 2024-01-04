@@ -174,8 +174,8 @@ impl GgmlDType {
     /// The block dtype
     pub fn zeros(&self, elem_count: usize) -> Box<dyn QuantizedType> {
         match self {
-            Self::F32 => Box::new(vec![f32::zeros(); elem_count / 1]),
-            Self::F16 => Box::new(vec![f16::zeros(); elem_count / 1]),
+            Self::F32 => Box::new(vec![f32::zeros(); elem_count]),
+            Self::F16 => Box::new(vec![f16::zeros(); elem_count]),
             Self::Q4_0 => Box::new(vec![BlockQ4_0::zeros(); elem_count / BlockQ4_0::BLCK_SIZE]),
             Self::Q4_1 => Box::new(vec![BlockQ4_1::zeros(); elem_count / BlockQ4_1::BLCK_SIZE]),
             Self::Q5_0 => Box::new(vec![BlockQ5_0::zeros(); elem_count / BlockQ5_0::BLCK_SIZE]),
@@ -334,10 +334,8 @@ impl QTensor {
         let storage = self.storage.dequantize(self.shape.elem_count())?;
         let none = crate::op::BackpropOp::none();
         let is_variable = false;
-        Ok(
-            crate::tensor::from_storage(storage, self.shape.clone(), none, is_variable)
-                .to_device(device)?,
-        )
+        crate::tensor::from_storage(storage, self.shape.clone(), none, is_variable)
+            .to_device(device)
     }
 
     pub fn storage_size_in_bytes(&self) -> usize {
@@ -479,14 +477,14 @@ impl crate::CustomOp1 for QTensor {
             GgmlDType::F32 => "kernel_mul_mv_f32_f32",
         };
         candle_metal_kernels::call_quantized_matmul_t(
-            &device.device(),
+            device.device(),
             &command_buffer,
             device.kernels(),
             name,
             (b, m, n, k),
-            &storage.buffer(),
+            storage.buffer(),
             layout.start_offset() * storage.dtype().size_in_bytes(),
-            &buffer,
+            buffer,
             &dst,
         )
         .map_err(MetalError::from)?;

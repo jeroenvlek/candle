@@ -49,7 +49,7 @@ impl QMetalStorage {
             GgmlDType::F32 => "kernel_dequantize_f32",
         };
         candle_metal_kernels::call_quantized_dequantize(
-            &device.device(),
+            device.device(),
             &command_buffer,
             device.kernels(),
             name,
