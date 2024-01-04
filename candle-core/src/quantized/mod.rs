@@ -442,8 +442,12 @@ impl crate::CustomOp1 for QTensor {
             crate::bail!("input tensor has only one dimension {layout:?}")
         }
         let mut dst_shape = src_shape.dims().to_vec();
-        let b = dst_shape[0];
-        let m = dst_shape[1];
+
+        let (b, m) = match dst_shape.len() {
+            3 => (dst_shape[0], dst_shape[1]),
+            2 => (1, dst_shape[0]),
+            n => crate::bail!("Invalid rank {n} for quantized matmul metal"),
+        };
         let last_k = dst_shape.pop().unwrap();
         if last_k != k {
             crate::bail!("input tensor {layout:?} incompatible with {:?}", self.shape)
@@ -456,22 +460,23 @@ impl crate::CustomOp1 for QTensor {
             QStorage::Metal(metal) => (metal.buffer(), metal.dtype()),
             _ => unreachable!("Cannot call metal matmul on non metal QTensor"),
         };
+        assert_eq!(layout.start_offset(), 0);
         let command_buffer = device.command_buffer()?;
         let name = match dtype {
-            GgmlDType::Q4_0 => "kernel_mul_mm_q4_0_f32",
-            GgmlDType::Q4_1 => "kernel_mul_mm_q4_1_f32",
-            GgmlDType::Q5_0 => "kernel_mul_mm_q5_0_f32",
-            GgmlDType::Q5_1 => "kernel_mul_mm_q5_1_f32",
-            GgmlDType::Q8_0 => "kernel_mul_mm_q8_0_f32",
-            GgmlDType::Q8_1 => "kernel_mul_mm_q8_1_f32",
-            GgmlDType::Q2K => "kernel_mul_mm_q2_K_f32",
-            GgmlDType::Q3K => "kernel_mul_mm_q3_K_f32",
-            GgmlDType::Q4K => "kernel_mul_mm_q4_K_f32",
-            GgmlDType::Q5K => "kernel_mul_mm_q5_K_f32",
-            GgmlDType::Q6K => "kernel_mul_mm_q6_K_f32",
-            GgmlDType::Q8K => "kernel_mul_mm_q8_K_f32",
-            GgmlDType::F16 => "kernel_mul_mm_f16_f32",
-            GgmlDType::F32 => "kernel_mul_mm_f32_f32",
+            GgmlDType::Q4_0 => "kernel_mul_mv_q4_0_f32",
+            GgmlDType::Q4_1 => "kernel_mul_mv_q4_1_f32",
+            GgmlDType::Q5_0 => "kernel_mul_mv_q5_0_f32",
+            GgmlDType::Q5_1 => "kernel_mul_mv_q5_1_f32",
+            GgmlDType::Q8_0 => "kernel_mul_mv_q8_0_f32",
+            GgmlDType::Q8_1 => "kernel_mul_mv_q8_1_f32",
+            GgmlDType::Q2K => "kernel_mul_mv_q2_K_f32",
+            GgmlDType::Q3K => "kernel_mul_mv_q3_K_f32",
+            GgmlDType::Q4K => "kernel_mul_mv_q4_K_f32",
+            GgmlDType::Q5K => "kernel_mul_mv_q5_K_f32",
+            GgmlDType::Q6K => "kernel_mul_mv_q6_K_f32",
+            GgmlDType::Q8K => "kernel_mul_mv_q8_K_f32",
+            GgmlDType::F16 => "kernel_mul_mv_f16_f32",
+            GgmlDType::F32 => "kernel_mul_mv_f32_f32",
         };
         candle_metal_kernels::call_quantized_matmul_t(
             &device.device(),
@@ -480,6 +485,7 @@ impl crate::CustomOp1 for QTensor {
             name,
             (b, m, n, k),
             &storage.buffer(),
+            layout.start_offset() * storage.dtype().size_in_bytes(),
             &buffer,
             &dst,
         )

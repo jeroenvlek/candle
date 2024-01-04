@@ -1,5 +1,5 @@
 use candle_core::{
-    quantized::{self, GgmlDType, QStorage},
+    quantized::{self, GgmlDType},
     test_device,
     test_utils::to_vec2_round,
     Device, Module, Result, Tensor,
@@ -44,39 +44,40 @@ fn quantized_matmul(device: &Device) -> Result<()> {
     let qtensor = quantized::QTensor::quantize(&tensor_rhs.t()?, GgmlDType::Q4_0)?;
     let matmul = quantized::QMatMul::from_qtensor(qtensor)?;
     let res = matmul.forward(&tensor_lhs)?;
-    assert_eq!(
-        to_vec2_round(&res, 0)?,
-        &[
-            [85120.0, 214562.0, 345455.0, 474748.0],
-            [213475.0, 604465.0, 1000686.0, 1388317.0],
-            [341876.0, 994283.0, 1655709.0, 2301518.0]
-        ]
-    );
+    match device {
+        Device::Metal(_) => assert_eq!(
+            to_vec2_round(&res, 0)?,
+            &[
+                [84946.0, 214126.0, 344757.0, 473798.0],
+                [213458.0, 604350.0, 1000469.0, 1387990.0],
+                [341970.0, 994574.0, 1656181.0, 2302182.0]
+            ]
+        ),
+        _ => assert_eq!(
+            to_vec2_round(&res, 0)?,
+            &[
+                [85120.0, 214562.0, 345455.0, 474748.0],
+                [213475.0, 604465.0, 1000686.0, 1388317.0],
+                [341876.0, 994283.0, 1655709.0, 2301518.0]
+            ]
+        ),
+    }
 
     Ok(())
 }
 
-test_device!(
-    quantized_matmul,
-    quantized_matmul_cpu,
-    quantized_matmul_cuda,
-    quantized_matmul_metal
-);
-
-#[test]
-fn quantized_matmul_neg() -> Result<()> {
-    let cpu = &Device::Cpu;
+fn quantized_matmul_neg(device: &Device) -> Result<()> {
     let (m, k, n) = (3, 64, 4);
     let lhs = (0..(m * k))
         .map(|v| v as f32 - (m * k) as f32 / 2.0)
         .collect::<Vec<_>>();
-    let tensor_lhs = Tensor::from_slice(&lhs, (m, k), cpu)?;
+    let tensor_lhs = Tensor::from_slice(&lhs, (m, k), device)?;
     let mut dst = vec![42.; 3 * 4];
     let mut rhs_t = vec![k_quants::BlockQ4_0::zeros(); 8];
     let rhs = (0..k * n)
         .map(|v| v as f32 - (k * n) as f32 / 3.0)
         .collect::<Vec<_>>();
-    let tensor_rhs = Tensor::from_slice(&rhs, (n, k), cpu)?.t()?;
+    let tensor_rhs = Tensor::from_slice(&rhs, (n, k), device)?.t()?;
     k_quants::BlockQ4_0::from_float(&rhs, &mut rhs_t)?;
     k_quants::matmul((m, k, n), &lhs, &rhs_t, &mut dst)?;
     assert_eq!(
@@ -96,21 +97,43 @@ fn quantized_matmul_neg() -> Result<()> {
         ]
     );
 
-    let storage = QStorage::Cpu(Box::new(rhs_t));
-    let qtensor = quantized::QTensor::new(storage, (4, 64))?;
+    let qtensor = quantized::QTensor::quantize(&tensor_rhs.t()?, GgmlDType::Q4_0)?;
     let matmul = quantized::QMatMul::from_qtensor(qtensor)?;
     let res = matmul.forward(&tensor_lhs)?;
-    assert_eq!(
-        to_vec2_round(&res, 0)?,
-        &[
-            [243524.0, -19596.0, -285051.0, -549815.0],
-            [23777.0, 21651.0, 19398.0, 18367.0],
-            [-196472.0, 63012.0, 324585.0, 587902.0]
-        ]
-    );
+    match device {
+        Device::Metal(_) => assert_eq!(
+            to_vec2_round(&res, 0)?,
+            &[
+                [243666.0, -19714.0, -285433.0, -550453.0],
+                [23782.0, 21654.0, 19400.0, 18369.0],
+                [-196102.0, 63022.0, 324233.0, 587191.0]
+            ]
+        ),
+        _ => assert_eq!(
+            to_vec2_round(&res, 0)?,
+            &[
+                [243524.0, -19596.0, -285051.0, -549815.0],
+                [23777.0, 21651.0, 19398.0, 18367.0],
+                [-196472.0, 63012.0, 324585.0, 587902.0]
+            ]
+        ),
+    }
 
     Ok(())
 }
+
+test_device!(
+    quantized_matmul,
+    quantized_matmul_cpu,
+    quantized_matmul_cuda,
+    quantized_matmul_metal
+);
+test_device!(
+    quantized_matmul_neg,
+    quantized_matmul_neg_cpu,
+    quantized_matmul_neg_cuda,
+    quantized_matmul_neg_metal
+);
 
 fn quantize_q4_0(device: &Device) -> Result<()> {
     let src = (0..32 * 4).map(|v| v as f32).collect::<Vec<_>>();

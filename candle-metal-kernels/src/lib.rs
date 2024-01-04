@@ -63,6 +63,8 @@ macro_rules! primitive {
     };
 }
 primitive!(usize);
+primitive!(i64);
+primitive!(i32);
 primitive!(u32);
 primitive!(f32);
 
@@ -1571,52 +1573,80 @@ pub fn call_quantized_matmul_t(
     name: &'static str,
     (b, m, n, k): (usize, usize, usize, usize),
     lhs: &Buffer,
+    lhs_offset: usize,
     rhs: &Buffer,
     output: &Buffer,
 ) -> Result<(), MetalKernelError> {
     let pipeline = kernels.load_pipeline(device, Source::Quantized, name)?;
-    let dst_el = b;
-    let (thread_group_count, thread_group_size) = linear_split(&pipeline, dst_el);
     let encoder = command_buffer.new_compute_command_encoder();
     encoder.wait_for_fence(&kernels.fence);
     encoder.set_compute_pipeline_state(&pipeline);
 
-    let ne00 = 0usize;
-    let ne02 = 0usize;
-    let nb01 = 0usize;
-    let nb02 = 0usize;
-    let ne12 = 0usize;
-    let nb10 = 0usize;
-    let nb11 = 0usize;
-    let nb12 = 0usize;
-    let ne0 = 0usize;
-    let ne1 = 0usize;
-    let r2 = 0usize;
-    let r3 = 0usize;
+    // Everything is in reverse
+    let ne00 = k as i64;
+    let ne01 = n as i64;
+    let ne02 = b as i64;
+    let ne03 = 1 as i64;
 
-    let ne01 = 0u64;
-    let ne11 = 0u64;
-    // let ne12 = 0u64;
-    let ne13 = 0u64;
+    let nb00 = 0i64;
+    let nb01 = 0 as i64;
+    let nb02 = 0 as i64;
+
+    let ne10 = k as i64;
+    let ne11 = m as i64;
+    let ne12 = b as i64;
+    let ne13 = 1 as i64;
+
+    let nb10 = 0i64;
+    let nb11 = 0i64;
+    let nb12 = 0i64;
+
+    let ne0 = n as i64;
+    let ne1 = m as i64;
+    let r2: u32 = (ne12 / ne02) as u32;
+    let r3: u32 = (ne13 / ne03) as u32;
     set_params!(
         encoder,
-        (lhs, rhs, output, ne00, ne02, nb01, nb02, ne12, nb10, nb11, nb12, ne0, ne1, r2, r3)
+        (
+            rhs,
+            (lhs, lhs_offset),
+            output,
+            ne00,
+            ne01,
+            ne02,
+            nb00,
+            nb01,
+            nb02,
+            ne10,
+            ne11,
+            ne12,
+            nb10,
+            nb11,
+            nb12,
+            ne0,
+            ne1,
+            r2,
+            r3
+        )
     );
     encoder.set_threadgroup_memory_length(0, 8192);
     encoder.use_resource(lhs, metal::MTLResourceUsage::Read);
     encoder.use_resource(rhs, metal::MTLResourceUsage::Read);
     encoder.use_resource(output, metal::MTLResourceUsage::Write);
-    let threads_per_grid = MTLSize {
-        width: (ne11 + 31) / 32,
-        height: (ne01 + 63) / 64,
-        depth: ne12 as u64 * ne13,
+
+    let nth0 = 8;
+    let nth1 = 8;
+    let thread_group_counts = MTLSize {
+        width: (ne01 as u64 + 7) / 8,
+        height: ne11 as u64,
+        depth: (ne12 * ne13) as u64,
     };
     let threads_per_threadgroup = MTLSize {
-        width: 128,
-        height: 1,
+        width: nth0,
+        height: nth1,
         depth: 1,
     };
-    encoder.dispatch_threads(threads_per_grid, threads_per_threadgroup);
+    encoder.dispatch_thread_groups(thread_group_counts, threads_per_threadgroup);
     encoder.update_fence(&kernels.fence);
     encoder.end_encoding();
 
