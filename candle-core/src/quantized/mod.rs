@@ -236,6 +236,7 @@ pub trait QuantizedType: Send + Sync {
     fn storage_size_in_bytes(&self) -> usize;
     fn as_ptr(&self) -> *const u8;
     fn block_size(&self) -> usize;
+    #[allow(clippy::wrong_self_convention)]
     fn from_float(&mut self, xs: &[f32]) -> Result<()>;
 }
 
@@ -410,6 +411,7 @@ impl crate::CustomOp1 for QTensor {
         }
         dst_shape.push(n);
         let dst_shape = Shape::from(dst_shape);
+        #[allow(clippy::infallible_destructuring_match)]
         let self_storage = match &self.storage {
             QStorage::Cpu(storage) => storage,
             #[cfg(feature = "metal")]
