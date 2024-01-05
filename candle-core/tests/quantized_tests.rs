@@ -756,14 +756,14 @@ quantized_matmul!(
 //     quantized_matmul_q8_1_metal,
 //     GgmlDType::Q8_1
 // );
-// TODO Bugged in metal - Bug also present in GGML
-// quantized_matmul!(
-//     quantized_matmul_q2k_bis,
-//     quantized_matmul_q2k_cpu,
-//     quantized_matmul_q2k_cuda,
-//     quantized_matmul_q2k_metal,
-//     GgmlDType::Q2K
-// );
+// TODO This is bugged (also bugged in GGML
+quantized_matmul!(
+    quantized_matmul_q2k_bis,
+    quantized_matmul_q2k_cpu,
+    quantized_matmul_q2k_cuda,
+    quantized_matmul_q2k_metal,
+    GgmlDType::Q2K
+);
 quantized_matmul!(
     quantized_matmul_q3k_bis,
     quantized_matmul_q3k_cpu,

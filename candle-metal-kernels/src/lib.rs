@@ -1619,7 +1619,7 @@ pub fn call_quantized_matmul_t(
     let r2: u32 = (ne12 / ne02) as u32;
     let r3: u32 = (ne13 / ne03) as u32;
 
-    let (thread_groups_count, threads_per_threadgroup) = match dtype {
+    let (nth0, nth1, align) = match dtype {
         GgmlDType::Q4_0
         | GgmlDType::Q4_1
         | GgmlDType::Q5_0
@@ -1628,112 +1628,57 @@ pub fn call_quantized_matmul_t(
         | GgmlDType::Q8_1 => {
             let nth0 = 8;
             let nth1 = 8;
-            let thread_groups_count = MTLSize {
-                width: (ne01 as u64 + 7) / 8,
-                height: ne11 as u64,
-                depth: (ne12 * ne13) as u64,
-            };
-            let threads_per_threadgroup = MTLSize {
-                width: nth0,
-                height: nth1,
-                depth: 1,
-            };
-            (thread_groups_count, threads_per_threadgroup)
+            let align = 8;
+            (nth0, nth1, align)
         }
         GgmlDType::Q2K => {
-            let nth0 = 2;
-            let nth1 = 32;
-            let thread_groups_count = MTLSize {
-                width: (ne01 as u64 + 7) / 8,
-                height: ne11 as u64,
-                depth: (ne12 * ne13) as u64,
-            };
-            let threads_per_threadgroup = MTLSize {
-                width: nth0,
-                height: nth1,
-                depth: 1,
-            };
-            (thread_groups_count, threads_per_threadgroup)
+            // Fixing a bug in Metal for GGML
+            let nth0 = 4;
+            let nth1 = 8;
+            let align = 4;
+            (nth0, nth1, align)
         }
         GgmlDType::Q4K => {
             let nth0 = 4;
             let nth1 = 8;
-            let thread_groups_count = MTLSize {
-                width: (ne01 as u64 + 3) / 4,
-                height: ne11 as u64,
-                depth: (ne12 * ne13) as u64,
-            };
-            let threads_per_threadgroup = MTLSize {
-                width: nth0,
-                height: nth1,
-                depth: 1,
-            };
-            (thread_groups_count, threads_per_threadgroup)
+            let align = 4;
+            (nth0, nth1, align)
         }
         GgmlDType::Q3K | GgmlDType::Q5K => {
             let nth0 = 2;
             let nth1 = 32;
-            let thread_groups_count = MTLSize {
-                width: (ne01 as u64 + 3) / 4,
-                height: ne11 as u64,
-                depth: (ne12 * ne13) as u64,
-            };
-            let threads_per_threadgroup = MTLSize {
-                width: nth0,
-                height: nth1,
-                depth: 1,
-            };
-            (thread_groups_count, threads_per_threadgroup)
+            let align = 4;
+            (nth0, nth1, align)
         }
         GgmlDType::Q6K => {
             let nth0 = 2;
             let nth1 = 32;
-            let thread_groups_count = MTLSize {
-                width: (ne01 as u64 + 1) / 2,
-                height: ne11 as u64,
-                depth: (ne12 * ne13) as u64,
-            };
-            let threads_per_threadgroup = MTLSize {
-                width: nth0,
-                height: nth1,
-                depth: 1,
-            };
-            (thread_groups_count, threads_per_threadgroup)
+            let align = 2;
+            (nth0, nth1, align)
         }
         GgmlDType::F16 | GgmlDType::Q8K => {
+            // Original implem uses rows
             let nth0 = 32;
             let nth1 = 1;
-            let nrows = 1;
-            let ny = (ne11 + nrows - 1) / nrows;
-            let thread_groups_count = MTLSize {
-                width: ne01 as u64,
-                height: ny as u64,
-                depth: (ne12 * ne13) as u64,
-            };
-            let threads_per_threadgroup = MTLSize {
-                width: nth0,
-                height: nth1,
-                depth: 1,
-            };
-            (thread_groups_count, threads_per_threadgroup)
+            let align = 8;
+            (nth0, nth1, align)
         }
         GgmlDType::F32 => {
             let nth0 = 32;
             let nth1 = 1;
-            let nrows = 4;
-            let ny = (ne11 + nrows - 1) / nrows;
-            let thread_groups_count = MTLSize {
-                width: ne01 as u64,
-                height: ny as u64,
-                depth: (ne12 * ne13) as u64,
-            };
-            let threads_per_threadgroup = MTLSize {
-                width: nth0,
-                height: nth1,
-                depth: 1,
-            };
-            (thread_groups_count, threads_per_threadgroup)
+            let align = 8;
+            (nth0, nth1, align)
         }
+    };
+    let thread_groups_count = MTLSize {
+        width: divide(ne01 as usize, align),
+        height: ne11 as u64,
+        depth: (ne12 * ne13) as u64,
+    };
+    let threads_per_threadgroup = MTLSize {
+        width: nth0,
+        height: nth1,
+        depth: 1,
     };
     let name = match dtype {
         GgmlDType::Q4_0 => "kernel_mul_mv_q4_0_f32",
@@ -1788,31 +1733,6 @@ pub fn call_quantized_matmul_t(
     encoder.use_resource(output, metal::MTLResourceUsage::Write);
 
     encoder.dispatch_thread_groups(thread_groups_count, threads_per_threadgroup);
-    encoder.update_fence(&kernels.fence);
-    encoder.end_encoding();
-
-    Ok(())
-}
-
-pub fn call_quantized_dequantize(
-    device: &Device,
-    command_buffer: &CommandBufferRef,
-    kernels: &Kernels,
-    name: &'static str,
-    elem_count: usize,
-    src: &Buffer,
-    output: &Buffer,
-) -> Result<(), MetalKernelError> {
-    let pipeline = kernels.load_pipeline(device, Source::Quantized, name)?;
-    // float4x4
-    let (thread_group_count, thread_group_size) = linear_split(&pipeline, elem_count / 16);
-    let encoder = command_buffer.new_compute_command_encoder();
-    encoder.wait_for_fence(&kernels.fence);
-    encoder.set_compute_pipeline_state(&pipeline);
-    set_params!(encoder, (elem_count, 0usize, src, output));
-    encoder.use_resource(src, metal::MTLResourceUsage::Read);
-    encoder.use_resource(output, metal::MTLResourceUsage::Write);
-    encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
     encoder.update_fence(&kernels.fence);
     encoder.end_encoding();
 

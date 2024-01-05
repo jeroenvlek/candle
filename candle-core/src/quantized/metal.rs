@@ -1,5 +1,5 @@
 use super::{GgmlDType, QStorage};
-use crate::{DType, MetalDevice, MetalError, MetalStorage, Result};
+use crate::{DType, MetalDevice, MetalStorage, Result};
 use metal::Buffer;
 use std::sync::Arc;
 
@@ -27,45 +27,6 @@ impl QMetalStorage {
     }
 
     pub fn dequantize(&self, elem_count: usize) -> Result<MetalStorage> {
-        // let buffer = self
-        //     .device
-        //     .new_buffer(elem_count, DType::F32, "dequantize")?;
-        // let device = &self.device;
-        // let command_buffer = device.command_buffer()?;
-        // let name = match self.dtype {
-        //     GgmlDType::Q4_0 => "kernel_dequantize_q4_0",
-        //     GgmlDType::Q4_1 => "kernel_dequantize_q4_1",
-        //     GgmlDType::Q5_0 => "kernel_dequantize_q5_0",
-        //     GgmlDType::Q5_1 => "kernel_dequantize_q5_1",
-        //     GgmlDType::Q8_0 => "kernel_dequantize_q8_0",
-        //     GgmlDType::Q8_1 => "kernel_dequantize_q8_1",
-        //     GgmlDType::Q2K => "kernel_dequantize_q2_K",
-        //     GgmlDType::Q3K => "kernel_dequantize_q3_K",
-        //     GgmlDType::Q4K => "kernel_dequantize_q4_K",
-        //     GgmlDType::Q5K => "kernel_dequantize_q5_K",
-        //     GgmlDType::Q6K => "kernel_dequantize_q6_K",
-        //     GgmlDType::Q8K => "kernel_dequantize_q8_K",
-        //     GgmlDType::F16 => "kernel_dequantize_f16",
-        //     GgmlDType::F32 => "kernel_dequantize_f32",
-        // };
-        // candle_metal_kernels::call_quantized_dequantize(
-        //     device.device(),
-        //     &command_buffer,
-        //     device.kernels(),
-        //     name,
-        //     elem_count,
-        //     &self.buffer,
-        //     &buffer,
-        // )
-        // .map_err(MetalError::from)?;
-        let length = self.buffer.length() as usize;
-        let size = self.dtype.block_size();
-        // if length != size * elem_count {
-        //     crate::bail!(
-        //         "The Metal buffer length is not aligned with dtype {:?} ({length} vs {size})",
-        //         self.dtype
-        //     );
-        // }
         let buffer = self.device.new_buffer_managed(self.buffer.length())?;
         let command_buffer = self.device.command_buffer()?;
         command_buffer.set_label("to_cpu");
