@@ -169,7 +169,7 @@ macro_rules! ops{
 }
 
 pub mod unary {
-    ops!(cos, sin, exp, sqr, sqrt, neg, log, gelu, ceil, floor, round, erf, gelu_erf, tanh);
+    ops!(cos, sin, exp, sqr, sqrt, neg, log, gelu, ceil, floor, round, erf, gelu_erf, tanh, abs);
 }
 pub mod binary {
     ops!(add, sub, mul, div, min, max, eq, ne, le, lt, ge, gt);
@@ -1566,22 +1566,35 @@ pub fn call_upsample_nearest_2d(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum GgmlDType {
+    Q4_0,
+    Q4_1,
+    Q5_0,
+    Q5_1,
+    Q8_0,
+    Q8_1,
+    Q2K,
+    Q3K,
+    Q4K,
+    Q5K,
+    Q6K,
+    Q8K,
+    F16,
+    F32,
+}
+
 pub fn call_quantized_matmul_t(
     device: &Device,
     command_buffer: &CommandBufferRef,
     kernels: &Kernels,
-    name: &'static str,
+    dtype: GgmlDType,
     (b, m, n, k): (usize, usize, usize, usize),
     lhs: &Buffer,
     lhs_offset: usize,
     rhs: &Buffer,
     output: &Buffer,
 ) -> Result<(), MetalKernelError> {
-    let pipeline = kernels.load_pipeline(device, Source::Quantized, name)?;
-    let encoder = command_buffer.new_compute_command_encoder();
-    encoder.wait_for_fence(&kernels.fence);
-    encoder.set_compute_pipeline_state(&pipeline);
-
     // Everything is in reverse
     let ne00 = k as i64;
     let ne01 = n as i64;
@@ -1605,6 +1618,146 @@ pub fn call_quantized_matmul_t(
     let ne1 = m as i64;
     let r2: u32 = (ne12 / ne02) as u32;
     let r3: u32 = (ne13 / ne03) as u32;
+
+    let (thread_groups_count, threads_per_threadgroup) = match dtype {
+        GgmlDType::Q4_0
+        | GgmlDType::Q4_1
+        | GgmlDType::Q5_0
+        | GgmlDType::Q5_1
+        | GgmlDType::Q8_0
+        | GgmlDType::Q8_1 => {
+            let nth0 = 8;
+            let nth1 = 8;
+            let thread_groups_count = MTLSize {
+                width: (ne01 as u64 + 7) / 8,
+                height: ne11 as u64,
+                depth: (ne12 * ne13) as u64,
+            };
+            let threads_per_threadgroup = MTLSize {
+                width: nth0,
+                height: nth1,
+                depth: 1,
+            };
+            (thread_groups_count, threads_per_threadgroup)
+        }
+        GgmlDType::Q2K => {
+            let nth0 = 2;
+            let nth1 = 32;
+            let thread_groups_count = MTLSize {
+                width: (ne01 as u64 + 7) / 8,
+                height: ne11 as u64,
+                depth: (ne12 * ne13) as u64,
+            };
+            let threads_per_threadgroup = MTLSize {
+                width: nth0,
+                height: nth1,
+                depth: 1,
+            };
+            (thread_groups_count, threads_per_threadgroup)
+        }
+        GgmlDType::Q4K => {
+            let nth0 = 4;
+            let nth1 = 8;
+            let thread_groups_count = MTLSize {
+                width: (ne01 as u64 + 3) / 4,
+                height: ne11 as u64,
+                depth: (ne12 * ne13) as u64,
+            };
+            let threads_per_threadgroup = MTLSize {
+                width: nth0,
+                height: nth1,
+                depth: 1,
+            };
+            (thread_groups_count, threads_per_threadgroup)
+        }
+        GgmlDType::Q3K | GgmlDType::Q5K => {
+            let nth0 = 2;
+            let nth1 = 32;
+            let thread_groups_count = MTLSize {
+                width: (ne01 as u64 + 3) / 4,
+                height: ne11 as u64,
+                depth: (ne12 * ne13) as u64,
+            };
+            let threads_per_threadgroup = MTLSize {
+                width: nth0,
+                height: nth1,
+                depth: 1,
+            };
+            (thread_groups_count, threads_per_threadgroup)
+        }
+        GgmlDType::Q6K => {
+            let nth0 = 2;
+            let nth1 = 32;
+            let thread_groups_count = MTLSize {
+                width: (ne01 as u64 + 1) / 2,
+                height: ne11 as u64,
+                depth: (ne12 * ne13) as u64,
+            };
+            let threads_per_threadgroup = MTLSize {
+                width: nth0,
+                height: nth1,
+                depth: 1,
+            };
+            (thread_groups_count, threads_per_threadgroup)
+        }
+        GgmlDType::F16 | GgmlDType::Q8K => {
+            let nth0 = 32;
+            let nth1 = 1;
+            let nrows = 1;
+            let ny = (ne11 + nrows - 1) / nrows;
+            let thread_groups_count = MTLSize {
+                width: ne01 as u64,
+                height: ny as u64,
+                depth: (ne12 * ne13) as u64,
+            };
+            let threads_per_threadgroup = MTLSize {
+                width: nth0,
+                height: nth1,
+                depth: 1,
+            };
+            (thread_groups_count, threads_per_threadgroup)
+        }
+        GgmlDType::F32 => {
+            let nth0 = 32;
+            let nth1 = 1;
+            let nrows = 4;
+            let ny = (ne11 + nrows - 1) / nrows;
+            let thread_groups_count = MTLSize {
+                width: ne01 as u64,
+                height: ny as u64,
+                depth: (ne12 * ne13) as u64,
+            };
+            let threads_per_threadgroup = MTLSize {
+                width: nth0,
+                height: nth1,
+                depth: 1,
+            };
+            (thread_groups_count, threads_per_threadgroup)
+        }
+    };
+    let name = match dtype {
+        GgmlDType::Q4_0 => "kernel_mul_mv_q4_0_f32",
+        GgmlDType::Q4_1 => "kernel_mul_mv_q4_1_f32",
+        GgmlDType::Q5_0 => "kernel_mul_mv_q5_0_f32",
+        GgmlDType::Q5_1 => "kernel_mul_mv_q5_1_f32",
+        GgmlDType::Q8_0 => "kernel_mul_mv_q8_0_f32",
+        GgmlDType::Q8_1 => "kernel_mul_mv_q8_1_f32",
+        GgmlDType::Q2K => "kernel_mul_mv_q2_K_f32",
+        GgmlDType::Q3K => "kernel_mul_mv_q3_K_f32",
+        GgmlDType::Q4K => "kernel_mul_mv_q4_K_f32",
+        GgmlDType::Q5K => "kernel_mul_mv_q5_K_f32",
+        GgmlDType::Q6K => "kernel_mul_mv_q6_K_f32",
+        GgmlDType::Q8K => "kernel_mul_mv_q8_K_f32",
+        GgmlDType::F16 => "kernel_mul_mv_f16_f32",
+        GgmlDType::F32 => "kernel_mul_mv_f32_f32",
+    };
+
+    let pipeline = kernels.load_pipeline(device, Source::Quantized, name)?;
+    let encoder = command_buffer.new_compute_command_encoder();
+    encoder.wait_for_fence(&kernels.fence);
+    encoder.set_compute_pipeline_state(&pipeline);
+
+    // println!("{b} {m} {n} {k}");
     set_params!(
         encoder,
         (
@@ -1634,19 +1787,7 @@ pub fn call_quantized_matmul_t(
     encoder.use_resource(rhs, metal::MTLResourceUsage::Read);
     encoder.use_resource(output, metal::MTLResourceUsage::Write);
 
-    let nth0 = 8;
-    let nth1 = 8;
-    let thread_group_counts = MTLSize {
-        width: (ne01 as u64 + 7) / 8,
-        height: ne11 as u64,
-        depth: (ne12 * ne13) as u64,
-    };
-    let threads_per_threadgroup = MTLSize {
-        width: nth0,
-        height: nth1,
-        depth: 1,
-    };
-    encoder.dispatch_thread_groups(thread_group_counts, threads_per_threadgroup);
+    encoder.dispatch_thread_groups(thread_groups_count, threads_per_threadgroup);
     encoder.update_fence(&kernels.fence);
     encoder.end_encoding();
 

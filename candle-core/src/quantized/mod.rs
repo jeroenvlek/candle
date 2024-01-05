@@ -34,7 +34,9 @@ impl Device {
             }
             #[cfg(feature = "metal")]
             Device::Metal(metal) => {
-                let size = elem_count * dtype.type_size();
+                let size = elem_count * dtype.type_size() / dtype.block_size();
+                // let cpu_storage = dtype.zeros(elem_count);
+                // assert_eq!(size, cpu_storage.size());
                 let buffer = metal.allocate_zeros(size)?;
                 Ok(QStorage::Metal(metal::QMetalStorage::new(
                     buffer,
@@ -73,6 +75,14 @@ impl QStorage {
             QStorage::Cpu(storage) => storage.dtype(),
             #[cfg(feature = "metal")]
             QStorage::Metal(storage) => storage.dtype(),
+        }
+    }
+
+    fn size_in_bytes(&self) -> usize {
+        match self {
+            QStorage::Cpu(storage) => storage.storage_size_in_bytes(),
+            #[cfg(feature = "metal")]
+            QStorage::Metal(storage) => storage.buffer().length() as usize,
         }
     }
 
@@ -238,11 +248,16 @@ pub trait QuantizedType: Send + Sync {
     fn block_size(&self) -> usize;
     #[allow(clippy::wrong_self_convention)]
     fn from_float(&mut self, xs: &[f32]) -> Result<()>;
+    fn size(&self) -> usize;
 }
 
 impl<T: k_quants::GgmlType + Send + Sync> QuantizedType for Vec<T> {
     fn matmul_t(&self, mkn: (usize, usize, usize), lhs: &[f32], dst: &mut [f32]) -> Result<()> {
         k_quants::matmul(mkn, lhs, self.as_slice(), dst)
+    }
+
+    fn size(&self) -> usize {
+        self.len() * core::mem::size_of::<T>()
     }
 
     fn from_float(&mut self, xs: &[f32]) -> Result<()> {
@@ -340,7 +355,7 @@ impl QTensor {
     }
 
     pub fn storage_size_in_bytes(&self) -> usize {
-        self.storage.dtype().type_size() * self.shape.elem_count()
+        self.storage.size_in_bytes()
     }
 
     pub fn data(&self) -> Result<Cow<'_, [u8]>> {
@@ -437,10 +452,10 @@ impl crate::CustomOp1 for QTensor {
         }
         let src_shape = layout.shape();
         // self is transposed so n is first then k.
-        let (n, k) = self.shape.dims2()?;
         if src_shape.rank() < 2 {
             crate::bail!("input tensor has only one dimension {layout:?}")
         }
+        let (n, k) = self.shape.dims2()?;
         let mut dst_shape = src_shape.dims().to_vec();
 
         let (b, m) = match dst_shape.len() {
@@ -460,29 +475,12 @@ impl crate::CustomOp1 for QTensor {
             QStorage::Metal(metal) => (metal.buffer(), metal.dtype()),
             _ => unreachable!("Cannot call metal matmul on non metal QTensor"),
         };
-        assert_eq!(layout.start_offset(), 0);
         let command_buffer = device.command_buffer()?;
-        let name = match dtype {
-            GgmlDType::Q4_0 => "kernel_mul_mv_q4_0_f32",
-            GgmlDType::Q4_1 => "kernel_mul_mv_q4_1_f32",
-            GgmlDType::Q5_0 => "kernel_mul_mv_q5_0_f32",
-            GgmlDType::Q5_1 => "kernel_mul_mv_q5_1_f32",
-            GgmlDType::Q8_0 => "kernel_mul_mv_q8_0_f32",
-            GgmlDType::Q8_1 => "kernel_mul_mv_q8_1_f32",
-            GgmlDType::Q2K => "kernel_mul_mv_q2_K_f32",
-            GgmlDType::Q3K => "kernel_mul_mv_q3_K_f32",
-            GgmlDType::Q4K => "kernel_mul_mv_q4_K_f32",
-            GgmlDType::Q5K => "kernel_mul_mv_q5_K_f32",
-            GgmlDType::Q6K => "kernel_mul_mv_q6_K_f32",
-            GgmlDType::Q8K => "kernel_mul_mv_q8_K_f32",
-            GgmlDType::F16 => "kernel_mul_mv_f16_f32",
-            GgmlDType::F32 => "kernel_mul_mv_f32_f32",
-        };
         candle_metal_kernels::call_quantized_matmul_t(
             device.device(),
             &command_buffer,
             device.kernels(),
-            name,
+            dtype.into(),
             (b, m, n, k),
             storage.buffer(),
             layout.start_offset() * storage.dtype().size_in_bytes(),
@@ -492,6 +490,28 @@ impl crate::CustomOp1 for QTensor {
         .map_err(MetalError::from)?;
         let dst_storage = crate::MetalStorage::new(dst, device, DType::F32);
         Ok((dst_storage, dst_shape))
+    }
+}
+
+#[cfg(feature = "metal")]
+impl From<GgmlDType> for candle_metal_kernels::GgmlDType {
+    fn from(value: GgmlDType) -> Self {
+        match value {
+            GgmlDType::Q4_0 => candle_metal_kernels::GgmlDType::Q4_0,
+            GgmlDType::Q4_1 => candle_metal_kernels::GgmlDType::Q4_1,
+            GgmlDType::Q5_0 => candle_metal_kernels::GgmlDType::Q5_0,
+            GgmlDType::Q5_1 => candle_metal_kernels::GgmlDType::Q5_1,
+            GgmlDType::Q8_0 => candle_metal_kernels::GgmlDType::Q8_0,
+            GgmlDType::Q8_1 => candle_metal_kernels::GgmlDType::Q8_1,
+            GgmlDType::Q2K => candle_metal_kernels::GgmlDType::Q2K,
+            GgmlDType::Q3K => candle_metal_kernels::GgmlDType::Q3K,
+            GgmlDType::Q4K => candle_metal_kernels::GgmlDType::Q4K,
+            GgmlDType::Q5K => candle_metal_kernels::GgmlDType::Q5K,
+            GgmlDType::Q6K => candle_metal_kernels::GgmlDType::Q6K,
+            GgmlDType::Q8K => candle_metal_kernels::GgmlDType::Q8K,
+            GgmlDType::F16 => candle_metal_kernels::GgmlDType::F16,
+            GgmlDType::F32 => candle_metal_kernels::GgmlDType::F32,
+        }
     }
 }
 

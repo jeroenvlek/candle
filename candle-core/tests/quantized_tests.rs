@@ -14,6 +14,37 @@ const GGML_MAX_QUANTIZATION_TOTAL_ERROR_2BITS: f32 = 0.0075;
 const GGML_MAX_QUANTIZATION_TOTAL_ERROR_3BITS: f32 = 0.0040;
 const GGML_MAX_DOT_PRODUCT_ERROR: f32 = 0.02;
 
+fn test_matmul(
+    device: &Device,
+    (b, m, n, k): (usize, usize, usize, usize),
+    dtype: GgmlDType,
+) -> Result<()> {
+    let lhs = (0..(m * k))
+        .map(|v| v as f32 / (m * k) as f32)
+        .collect::<Vec<_>>();
+    let rhs = (0..(k * n))
+        .map(|v| v as f32 / (n * k) as f32)
+        .collect::<Vec<_>>();
+
+    let lhs = Tensor::from_slice(&lhs, (m, k), device)?;
+    let rhs = Tensor::from_slice(&rhs, (k, n), device)?;
+    let mm = lhs.matmul(&rhs)?;
+    let qtensor = quantized::QTensor::quantize(&rhs.t()?, dtype)?;
+    let matmul = quantized::QMatMul::from_qtensor(qtensor)?;
+    let res = matmul.forward(&lhs)?;
+
+    let error: f32 = ((&mm - &res)?.abs()? / &mm.abs()?)?
+        .sum_all()?
+        .to_scalar()?;
+    let error = error / (b * m * n) as f32;
+    assert!(
+        error <= 0.02,
+        "Error {error} is too big. \nExpected:\n {mm} \nFound:\n {res}\n for {dtype:?}"
+    );
+
+    Ok(())
+}
+
 fn quantized_matmul(device: &Device) -> Result<()> {
     let (m, k, n) = (3, 64, 4);
     let lhs = (0..(m * k)).map(|v| v as f32).collect::<Vec<_>>();
@@ -62,6 +93,8 @@ fn quantized_matmul(device: &Device) -> Result<()> {
             ]
         ),
     }
+
+    test_matmul(device, (1, 3, 4, 256), GgmlDType::Q4_0)?;
 
     Ok(())
 }
@@ -158,7 +191,7 @@ fn quantize_q4_0(device: &Device) -> Result<()> {
             127.0, 127.0
         ]
     );
-    ggml_quantization_error_test2(GgmlDType::Q4_0, device, GGML_MAX_QUANTIZATION_TOTAL_ERROR)?;
+    ggml_quantization_error_test(GgmlDType::Q4_0, device, GGML_MAX_QUANTIZATION_TOTAL_ERROR)?;
     Ok(())
 }
 
@@ -184,7 +217,7 @@ fn quantize_q4_1(device: &Device) -> Result<()> {
             118.73, 118.73, 120.797, 120.797, 122.863, 122.863, 124.93, 124.93, 126.996, 126.996
         ]
     );
-    ggml_quantization_error_test2(GgmlDType::Q4_1, device, GGML_MAX_QUANTIZATION_TOTAL_ERROR)?;
+    ggml_quantization_error_test(GgmlDType::Q4_1, device, GGML_MAX_QUANTIZATION_TOTAL_ERROR)?;
     Ok(())
 }
 
@@ -210,7 +243,7 @@ fn quantize_q5_0(device: &Device) -> Result<()> {
             119.063, 119.063, 119.063, 119.063, 127.0, 127.0, 127.0, 127.0
         ]
     );
-    ggml_quantization_error_test2(GgmlDType::Q5_0, device, GGML_MAX_QUANTIZATION_TOTAL_ERROR)?;
+    ggml_quantization_error_test(GgmlDType::Q5_0, device, GGML_MAX_QUANTIZATION_TOTAL_ERROR)?;
     Ok(())
 }
 
@@ -234,7 +267,7 @@ fn quantize_q5_1(device: &Device) -> Result<()> {
             124.0, 125.0, 126.0, 127.0
         ]
     );
-    ggml_quantization_error_test2(GgmlDType::Q5_1, device, GGML_MAX_QUANTIZATION_TOTAL_ERROR)?;
+    ggml_quantization_error_test(GgmlDType::Q5_1, device, GGML_MAX_QUANTIZATION_TOTAL_ERROR)?;
     Ok(())
 }
 
@@ -296,7 +329,7 @@ fn calculate_rmse(a: &[f32], b: &[f32]) -> f32 {
 }
 
 /// Mirrores the GGML quanitzation unit test: https://github.com/ggerganov/llama.cpp/blob/master/tests/test-quantize-fns.cpp#L43-L50
-fn ggml_quantization_error_test2(dtype: GgmlDType, device: &Device, max_error: f32) -> Result<()> {
+fn ggml_quantization_error_test(dtype: GgmlDType, device: &Device, max_error: f32) -> Result<()> {
     let src = create_ggml_like_vector(0.0);
     let src = Tensor::from_slice(&src, (GGML_TEST_SIZE,), device)?;
     let quant = quantized::QTensor::quantize(&src, dtype)?;
@@ -329,20 +362,10 @@ fn quantize_q2k(device: &Device) -> Result<()> {
         [-0.5, -0.375, -0.25, 0.0, 0.28125, 0.49902344]
     );
     let dst = round_vector(&dst);
-    match device {
-        Device::Metal(_) => {
-            assert_eq!(
-                [dst[0], dst[128], dst[256], dst[512], dst[800], dst[1023]],
-                [-0.5, -0.366, -0.25, 0.0, 0.295, 0.491]
-            );
-        }
-        _ => {
-            assert_eq!(
-                [dst[0], dst[128], dst[256], dst[512], dst[800], dst[1023]],
-                [-0.499, -0.366, -0.249, 0.0, 0.295, 0.492]
-            );
-        }
-    }
+    assert_eq!(
+        [dst[0], dst[128], dst[256], dst[512], dst[800], dst[1023]],
+        [-0.499, -0.366, -0.249, 0.0, 0.295, 0.492]
+    );
 
     let src_big = get_test_vector2(128.0, 1024, device)?;
     let quant_big = quantized::QTensor::quantize(&src_big, dtype)?;
@@ -352,7 +375,7 @@ fn quantize_q2k(device: &Device) -> Result<()> {
     let dst_big = dst_big.to_vec1::<f32>()?;
     compare_with_error(dst_big.as_slice(), src_big.as_slice(), 6.0);
 
-    ggml_quantization_error_test2(dtype, device, GGML_MAX_QUANTIZATION_TOTAL_ERROR_2BITS)?;
+    ggml_quantization_error_test(dtype, device, GGML_MAX_QUANTIZATION_TOTAL_ERROR_2BITS)?;
     Ok(())
 }
 
@@ -385,7 +408,7 @@ fn quantize_q3k(device: &Device) -> Result<()> {
     let dst_big = dst_big.to_vec1::<f32>()?;
     compare_with_error(dst_big.as_slice(), src_big.as_slice(), 3.5);
 
-    ggml_quantization_error_test2(dtype, device, GGML_MAX_QUANTIZATION_TOTAL_ERROR_3BITS)?;
+    ggml_quantization_error_test(dtype, device, GGML_MAX_QUANTIZATION_TOTAL_ERROR_3BITS)?;
     Ok(())
 }
 
@@ -418,7 +441,7 @@ fn quantize_q4k(device: &Device) -> Result<()> {
     let dst_big = dst_big.to_vec1::<f32>()?;
     compare_with_error(dst_big.as_slice(), src_big.as_slice(), 4.5);
 
-    ggml_quantization_error_test2(dtype, device, GGML_MAX_QUANTIZATION_TOTAL_ERROR)?;
+    ggml_quantization_error_test(dtype, device, GGML_MAX_QUANTIZATION_TOTAL_ERROR)?;
     Ok(())
 }
 
@@ -438,20 +461,10 @@ fn quantize_q5k(device: &Device) -> Result<()> {
         [-0.5, -0.375, -0.25, 0.0, 0.28125, 0.49902344]
     );
     let dst = round_vector(&dst);
-    match device {
-        Device::Metal(_) => {
-            assert_eq!(
-                [dst[0], dst[128], dst[256], dst[512], dst[800], dst[1023]],
-                [-0.5, -0.373, -0.25, 0.0, 0.279, 0.499]
-            );
-        }
-        _ => {
-            assert_eq!(
-                [dst[0], dst[128], dst[256], dst[512], dst[800], dst[1023]],
-                [-0.499, -0.372, -0.249, 0.001, 0.279, 0.499]
-            );
-        }
-    }
+    assert_eq!(
+        [dst[0], dst[128], dst[256], dst[512], dst[800], dst[1023]],
+        [-0.499, -0.372, -0.249, 0.001, 0.279, 0.499]
+    );
 
     let src_big = get_test_vector2(128.0, 1024, device)?;
     let quant_big = quantized::QTensor::quantize(&src_big, dtype)?;
@@ -461,7 +474,7 @@ fn quantize_q5k(device: &Device) -> Result<()> {
     let dst_big = dst_big.to_vec1::<f32>()?;
     compare_with_error(dst_big.as_slice(), src_big.as_slice(), 2.5);
 
-    ggml_quantization_error_test2(dtype, device, GGML_MAX_QUANTIZATION_TOTAL_ERROR)?;
+    ggml_quantization_error_test(dtype, device, GGML_MAX_QUANTIZATION_TOTAL_ERROR)?;
     Ok(())
 }
 
@@ -481,20 +494,10 @@ fn quantize_q6k(device: &Device) -> Result<()> {
         [-0.5, -0.375, -0.25, 0.0, 0.28125, 0.49902344]
     );
     let dst = round_vector(&dst);
-    match device {
-        Device::Metal(_) => {
-            assert_eq!(
-                [dst[0], dst[128], dst[256], dst[512], dst[800], dst[1023]],
-                [-0.497, -0.373, -0.25, -0.0, 0.284, 0.5]
-            );
-        }
-        _ => {
-            assert_eq!(
-                [dst[0], dst[128], dst[256], dst[512], dst[800], dst[1023]],
-                [-0.497, -0.372, -0.25, -0.0, 0.284, 0.5]
-            );
-        }
-    }
+    assert_eq!(
+        [dst[0], dst[128], dst[256], dst[512], dst[800], dst[1023]],
+        [-0.497, -0.372, -0.25, -0.0, 0.284, 0.5]
+    );
 
     let src_big = get_test_vector2(128.0, 1024, device)?;
     let quant_big = quantized::QTensor::quantize(&src_big, dtype)?;
@@ -504,7 +507,7 @@ fn quantize_q6k(device: &Device) -> Result<()> {
     let dst_big = dst_big.to_vec1::<f32>()?;
     compare_with_error(dst_big.as_slice(), src_big.as_slice(), 2.0);
 
-    ggml_quantization_error_test2(dtype, device, GGML_MAX_QUANTIZATION_TOTAL_ERROR)?;
+    ggml_quantization_error_test(dtype, device, GGML_MAX_QUANTIZATION_TOTAL_ERROR)?;
     Ok(())
 }
 
@@ -537,7 +540,7 @@ fn quantize_q8k(device: &Device) -> Result<()> {
     let dst_big = dst_big.to_vec1::<f32>()?;
     compare_with_error(dst_big.as_slice(), src_big.as_slice(), 0.6);
 
-    ggml_quantization_error_test2(dtype, device, GGML_MAX_QUANTIZATION_TOTAL_ERROR)?;
+    ggml_quantization_error_test(dtype, device, GGML_MAX_QUANTIZATION_TOTAL_ERROR)?;
     Ok(())
 }
 
@@ -695,6 +698,108 @@ fn get_random_tensors(
     let mm = lhs.matmul(&rhs.t()?)?;
     Ok((lhs, rhs, mm))
 }
+
+#[macro_export]
+macro_rules! quantized_matmul {
+    // TODO: Switch to generating the two last arguments automatically once concat_idents is
+    // stable. https://github.com/rust-lang/rust/issues/29599
+    ($fn_name: ident, $fn_name_cpu: ident, $fn_name_cuda: ident, $fn_name_metal: ident, $dtype: expr) => {
+        fn $fn_name(device: &Device) -> Result<()> {
+            test_matmul(device, (1, 3, 4, 256), $dtype)?;
+            Ok(())
+        }
+
+        test_device!($fn_name, $fn_name_cpu, $fn_name_cuda, $fn_name_metal);
+    };
+}
+
+quantized_matmul!(
+    quantized_matmul_q4_0_bis,
+    quantized_matmul_q4_0_cpu,
+    quantized_matmul_q4_0_cuda,
+    quantized_matmul_q4_0_metal,
+    GgmlDType::Q4_0
+);
+quantized_matmul!(
+    quantized_matmul_q4_1_bis,
+    quantized_matmul_q4_1_cpu,
+    quantized_matmul_q4_1_cuda,
+    quantized_matmul_q4_1_metal,
+    GgmlDType::Q4_1
+);
+quantized_matmul!(
+    quantized_matmul_q5_0_bis,
+    quantized_matmul_q5_0_cpu,
+    quantized_matmul_q5_0_cuda,
+    quantized_matmul_q5_0_metal,
+    GgmlDType::Q5_0
+);
+quantized_matmul!(
+    quantized_matmul_q5_1_bis,
+    quantized_matmul_q5_1_cpu,
+    quantized_matmul_q5_1_cuda,
+    quantized_matmul_q5_1_metal,
+    GgmlDType::Q5_1
+);
+quantized_matmul!(
+    quantized_matmul_q8_0_bis,
+    quantized_matmul_q8_0_cpu,
+    quantized_matmul_q8_0_cuda,
+    quantized_matmul_q8_0_metal,
+    GgmlDType::Q8_0
+);
+// Not implemented in Ggml
+// quantized_matmul!(
+//     quantized_matmul_q8_1_bis,
+//     quantized_matmul_q8_1_cpu,
+//     quantized_matmul_q8_1_cuda,
+//     quantized_matmul_q8_1_metal,
+//     GgmlDType::Q8_1
+// );
+// TODO Bugged in metal - Bug also present in GGML
+// quantized_matmul!(
+//     quantized_matmul_q2k_bis,
+//     quantized_matmul_q2k_cpu,
+//     quantized_matmul_q2k_cuda,
+//     quantized_matmul_q2k_metal,
+//     GgmlDType::Q2K
+// );
+quantized_matmul!(
+    quantized_matmul_q3k_bis,
+    quantized_matmul_q3k_cpu,
+    quantized_matmul_q3k_cuda,
+    quantized_matmul_q3k_metal,
+    GgmlDType::Q3K
+);
+quantized_matmul!(
+    quantized_matmul_q4k_bis,
+    quantized_matmul_q4k_cpu,
+    quantized_matmul_q4k_cuda,
+    quantized_matmul_q4k_metal,
+    GgmlDType::Q4K
+);
+quantized_matmul!(
+    quantized_matmul_q5k_bis,
+    quantized_matmul_q5k_cpu,
+    quantized_matmul_q5k_cuda,
+    quantized_matmul_q5k_metal,
+    GgmlDType::Q5K
+);
+quantized_matmul!(
+    quantized_matmul_q6k_bis,
+    quantized_matmul_q6k_cpu,
+    quantized_matmul_q6k_cuda,
+    quantized_matmul_q6k_metal,
+    GgmlDType::Q6K
+);
+// Not implemented on metal
+// quantized_matmul!(
+//     quantized_matmul_q8k_bis,
+//     quantized_matmul_q8k_cpu,
+//     quantized_matmul_q8k_cuda,
+//     quantized_matmul_q8k_metal,
+//     GgmlDType::Q8K
+// );
 
 #[test]
 fn quantized_matmul_q2k() -> Result<()> {

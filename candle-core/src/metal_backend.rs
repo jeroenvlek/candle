@@ -131,6 +131,10 @@ impl MetalDevice {
         &self.device
     }
 
+    pub fn fence(&self) -> &metal::Fence {
+        &self.fence
+    }
+
     pub fn command_queue(&self) -> &CommandQueue {
         &self.command_queue
     }
@@ -651,6 +655,7 @@ impl BackendStorage for MetalStorage {
                 ("ufloor", DType::F32) => contiguous::floor::FLOAT,
                 ("uround", DType::F32) => contiguous::round::FLOAT,
                 ("utanh", DType::F32) => contiguous::tanh::FLOAT,
+                ("uabs", DType::F32) => contiguous::abs::FLOAT,
                 ("ucos", DType::F16) => contiguous::cos::HALF,
                 ("usin", DType::F16) => contiguous::sin::HALF,
                 ("usqr", DType::F16) => contiguous::sqr::HALF,
@@ -665,6 +670,7 @@ impl BackendStorage for MetalStorage {
                 ("ufloor", DType::F16) => contiguous::floor::HALF,
                 ("uround", DType::F16) => contiguous::round::HALF,
                 ("utanh", DType::F16) => contiguous::tanh::HALF,
+                ("uabs", DType::F16) => contiguous::abs::HALF,
                 (name, dtype) => crate::bail!("Match {name} - {dtype:?}"),
             };
             candle_metal_kernels::call_unary_contiguous(
@@ -693,6 +699,7 @@ impl BackendStorage for MetalStorage {
                 ("uceil", DType::F32) => strided::ceil::FLOAT,
                 ("ufloor", DType::F32) => strided::floor::FLOAT,
                 ("uround", DType::F32) => strided::round::FLOAT,
+                ("uabs", DType::F32) => strided::abs::FLOAT,
                 ("ucos", DType::F16) => strided::cos::HALF,
                 ("usin", DType::F16) => strided::sin::HALF,
                 ("usqr", DType::F16) => strided::sqr::HALF,
@@ -706,6 +713,7 @@ impl BackendStorage for MetalStorage {
                 ("uceil", DType::F16) => strided::ceil::HALF,
                 ("ufloor", DType::F16) => strided::floor::HALF,
                 ("uround", DType::F16) => strided::round::HALF,
+                ("uabs", DType::F16) => strided::abs::HALF,
                 (name, dtype) => crate::bail!("Match {name} - {dtype:?}"),
             };
             candle_metal_kernels::call_unary_strided(
@@ -1204,7 +1212,7 @@ impl BackendStorage for MetalStorage {
             let src_offset = (src_l.start_offset() * self.dtype.size_in_bytes()) as NSUInteger;
             let length = (src_l.shape().elem_count() * self.dtype.size_in_bytes()) as NSUInteger;
             let dst_offset = (dst_offset * dst.dtype().size_in_bytes()) as NSUInteger;
-            blit.copy_from_buffer(&self.buffer, src_offset, dst.buffer(), dst_offset, length);
+            blit.copy_from_buffer(&self.buffer, src_offset, &dst.buffer(), dst_offset, length);
             blit.end_encoding();
         } else {
             let src_shape = src_l.shape();
